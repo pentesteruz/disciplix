@@ -1,0 +1,38 @@
+# Image ichiga tushmasligi kerak bo'lgan narsalar.
+# Bularsiz `COPY . .` .venv, node_modules, .git va lokal bazalarni ham ko'chiradi.
+
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Sirlar
+.env
+.env.*
+*.session
+*.session-journal
+
+# Lokal bazalar va dumplar
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+db/
+
+# Node — image ichida `npm ci` bilan qayta o'rnatiladi
+node_modules
+**/node_modules
+web2/.next
+web2/out
+disciplix-app
+
+# Ishlab chiqish artefaktlari
+.pytest_cache
+.vscode
+*.log
+output.log
+tests

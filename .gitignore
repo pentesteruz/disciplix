@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.session
+app.db
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Next.js
+**/node_modules/
+**/.next/
+
+# Logs
+*.log
+output.log
+
+# OS
+.DS_Store
+
+# v0 runtime files
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+# Build artifacts (Next.js static export) — manbadan qayta quriladi
+web2/out/
+web2/.next/
+disciplix-app/
+web2/tsconfig.tsbuildinfo
+
+# Databases / dumps — real foydalanuvchi ma'lumoti bo'lishi mumkin
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+db/
+
+# Python
+.pytest_cache/

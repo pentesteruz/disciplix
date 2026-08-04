@@ -1,0 +1,20 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="d_gradient" x1="120" y1="80" x2="400" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69D99D"/>
+      <stop offset="1" stop-color="#38B374"/>
+    </linearGradient>
+    <mask id="cutout">
+      <rect width="512" height="512" fill="white" />
+      <path d="M 100 370 L 220 240 L 280 280 L 400 160" stroke="black" stroke-width="50" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <polygon points="340,130 430,130 430,220" fill="black"/>
+    </mask>
+  </defs>
+
+  <rect width="512" height="512" fill="white" rx="110" />
+
+  <path d="M 150 90 L 300 90 C 430 90 450 170 450 256 C 450 342 430 422 300 422 L 150 422 Z M 230 160 L 230 352 L 290 352 C 350 352 360 300 360 256 C 360 212 350 160 290 160 Z" fill="url(#d_gradient)" fill-rule="evenodd" mask="url(#cutout)"/>
+  
+  <path d="M 120 350 L 220 240 L 280 280 L 380 180" stroke="#0D5131" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <polygon points="350,160 410,150 400,210" fill="#0D5131"/>
+</svg>

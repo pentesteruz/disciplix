@@ -1,0 +1,12 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+    "python.analysis.extraPaths": [
+        "C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages",
+        "${workspaceFolder}"
+    ],
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.ignore": ["**"],
+    "pylint.enabled": false,
+    "python.linting.enabled": false
+}
