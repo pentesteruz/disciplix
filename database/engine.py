@@ -58,155 +58,58 @@ async def init_db():
     # bo'lmasa, Base.metadata.create_all xatolik (foreign key constraint does not exist) beradi.
     if not DB_NAME.startswith("sqlite"):
         try:
-            # 1. users jadvalini tekshirish va to'g'irlash
-            user_cols: dict[str, str] = {}
-            try:
-                async with engine.begin() as conn:
-                    res = await conn.execute(text(
-                        "SELECT column_name, data_type FROM information_schema.columns "
-                        "WHERE table_name = 'users';"
-                    ))
-                    user_cols = {r[0].lower(): r[1] for r in res.fetchall()}
-            except Exception as e:
-                logging.warning(f"users jadvalini o'qishda ogohlantirish: {e}")
+            # 1. users jadvalini tekshirish:
+            # Agar 'users' jadvali mavjud bo'lsa, lekin unda 'telegram_id' ustuni bo'lmasa,
+            # demak bu jadval Disciplix botiga tegishli emas (boshqa template yoki eski mos kelmaydigan jadval).
+            # Unda bot foydalanuvchilari bo'lishi mumkin emas, chunki bot faqat telegram_id bilan ishlaydi.
+            # Shuning uchun uni CASCADE bilan o'chiramiz, shunda Base.metadata.create_all uni to'liq
+            # va to'g'ri sxema bilan qayta yaratadi.
+            async with engine.begin() as conn:
+                res = await conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'users';"
+                ))
+                user_cols = {r[0].lower() for r in res.fetchall()}
 
-            if user_cols and "id" not in user_cols:
-                cnt = 0
-                try:
-                    async with engine.begin() as conn:
-                        cnt_res = await conn.execute(text("SELECT COUNT(*) FROM users;"))
-                        cnt = cnt_res.scalar() or 0
-                except Exception:
-                    cnt = 0
+                if user_cols and "telegram_id" not in user_cols:
+                    logging.warning(
+                        f"DIAGNOSTIC: 'users' jadvalida 'telegram_id' topilmadi (ustunlar: {list(user_cols)})! "
+                        "Ushbu mos kelmaydigan jadval toza qayta yaratish uchun o'chirilmoqda (DROP TABLE users CASCADE)..."
+                    )
+                    await conn.execute(text("DROP TABLE IF EXISTS users CASCADE;"))
+                    user_cols = set()
 
-                logging.warning(
-                    f"DIAGNOSTIC: 'users' jadvali mavjud ({cnt} qator), "
-                    f"ammo 'id' ustuni yo'q! Ustunlar: {list(user_cols.keys())}"
-                )
-
-                if cnt == 0:
+                if user_cols and "id" not in user_cols:
                     try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("DROP TABLE users CASCADE;"))
-                            logging.info("Bo'sh va mos kelmaydigan 'users' jadvali o'chirildi (CASCADE).")
-                    except Exception as e:
-                        logging.error(f"users jadvalini drop qilishda xatolik: {e}")
-                else:
-                    # Qatorlar bor: ustunlarni moslashtiramiz
-                    if "user_id" in user_cols and "telegram_id" not in user_cols:
-                        try:
-                            async with engine.begin() as conn:
-                                await conn.execute(text("ALTER TABLE users RENAME COLUMN user_id TO telegram_id;"))
-                                logging.info("users.user_id -> telegram_id ga o'zgartirildi.")
-                        except Exception:
-                            pass
-                    elif "user_id" in user_cols and "telegram_id" in user_cols:
-                        try:
-                            async with engine.begin() as conn:
-                                await conn.execute(text("ALTER TABLE users RENAME COLUMN user_id TO id;"))
-                                logging.info("users.user_id -> id ga o'zgartirildi.")
-                        except Exception:
-                            pass
-
-                    # 1-qadam: Avvalgi har qanday PRIMARY KEY cheklovini olib tashlaymiz
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey CASCADE;"))
+                        await conn.execute(text("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey CASCADE;"))
                     except Exception:
                         pass
-
                     try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("""
-                                DO $$
-                                DECLARE r RECORD;
-                                BEGIN
-                                    FOR r IN (
-                                        SELECT conname 
-                                        FROM pg_constraint 
-                                        WHERE conrelid = 'users'::regclass AND contype = 'p'
-                                    ) LOOP
-                                        EXECUTE 'ALTER TABLE users DROP CONSTRAINT IF EXISTS ' || quote_ident(r.conname) || ' CASCADE;';
-                                    END LOOP;
-                                END $$;
-                            """))
-                    except Exception as e:
-                        logging.warning(f"users PK constraintlarini drop qilishda ogohlantirish: {e}")
-
-                    # 2-qadam: id ustunini SERIAL sifatida qo'shamiz (bu har bir mavjud qatorga 1, 2, 3... beradi)
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS id SERIAL;"))
-                            logging.info("users jadvaliga id SERIAL ustuni qo'shildi.")
-                    except Exception as e:
-                        logging.warning(f"users jadvaliga id SERIAL qo'shishda ogohlantirish: {e}")
-
-                    # 3-qadam: id ustunini PRIMARY KEY qilamiz
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("ALTER TABLE users ADD PRIMARY KEY (id);"))
-                            logging.info("users.id ustuni PRIMARY KEY sifatida belgilandi.")
-                    except Exception as e:
-                        logging.warning(f"users.id ni PRIMARY KEY qilishda ogohlantirish: {e}")
-
-            # 2. dreams jadvalini tekshirish va to'g'irlash
-            dream_cols: dict[str, str] = {}
-            try:
-                async with engine.begin() as conn:
-                    res = await conn.execute(text(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name = 'dreams';"
-                    ))
-                    dream_cols = {r[0].lower(): True for r in res.fetchall()}
-            except Exception:
-                pass
-
-            if dream_cols and "id" not in dream_cols:
-                d_cnt = 0
-                try:
-                    async with engine.begin() as conn:
-                        cnt_res = await conn.execute(text("SELECT COUNT(*) FROM dreams;"))
-                        d_cnt = cnt_res.scalar() or 0
-                except Exception:
-                    pass
-
-                if d_cnt == 0:
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("DROP TABLE dreams CASCADE;"))
+                        await conn.execute(text("""
+                            DO $$
+                            DECLARE r RECORD;
+                            BEGIN
+                                FOR r IN (
+                                    SELECT conname FROM pg_constraint 
+                                    WHERE conrelid = 'users'::regclass AND contype = 'p'
+                                ) LOOP
+                                    EXECUTE 'ALTER TABLE users DROP CONSTRAINT IF EXISTS ' || quote_ident(r.conname) || ' CASCADE;';
+                                END LOOP;
+                            END $$;
+                        """))
                     except Exception:
                         pass
-                else:
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("ALTER TABLE dreams DROP CONSTRAINT IF EXISTS dreams_pkey CASCADE;"))
-                    except Exception:
-                        pass
+                    await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS id SERIAL;"))
+                    await conn.execute(text("ALTER TABLE users ADD PRIMARY KEY (id);"))
+                    logging.info("users jadvaliga id SERIAL PRIMARY KEY qo'shildi.")
 
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("""
-                                DO $$
-                                DECLARE r RECORD;
-                                BEGIN
-                                    FOR r IN (
-                                        SELECT conname 
-                                        FROM pg_constraint 
-                                        WHERE conrelid = 'dreams'::regclass AND contype = 'p'
-                                    ) LOOP
-                                        EXECUTE 'ALTER TABLE dreams DROP CONSTRAINT IF EXISTS ' || quote_ident(r.conname) || ' CASCADE;';
-                                    END LOOP;
-                                END $$;
-                            """))
-                    except Exception:
-                        pass
-
-                    try:
-                        async with engine.begin() as conn:
-                            await conn.execute(text("ALTER TABLE dreams ADD COLUMN IF NOT EXISTS id SERIAL;"))
-                            await conn.execute(text("ALTER TABLE dreams ADD PRIMARY KEY (id);"))
-                    except Exception:
-                        pass
+            # 2. dreams jadvalini tekshirish: agar 'id' bo'lmasa, tuzatish
+            async with engine.begin() as conn:
+                res = await conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'dreams';"
+                ))
+                dream_cols = {r[0].lower() for r in res.fetchall()}
+                if dream_cols and "id" not in dream_cols:
+                    await conn.execute(text("DROP TABLE IF EXISTS dreams CASCADE;"))
         except Exception as e:
             logging.error(f"PostgreSQL oldindan tekshirishda xatolik yuz berdi: {e}", exc_info=True)
 

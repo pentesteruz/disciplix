@@ -251,7 +251,7 @@ class CurrencyConversionLog(Base):
     snapshot = Column(SmartEncryptedText, nullable=False)  # JSON: o'zgarishdan oldingi summalar
     created_at = Column(DateTime, default=get_tashkent_time)
 
-    user = relationship("User", foreign_keys=[user_id])
+    user = relationship("User", foreign_keys=[user_id], overlaps="currency_conversion_logs")
 
 
 class WithdrawalRequest(Base):
