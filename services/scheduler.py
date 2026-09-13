@@ -22,6 +22,7 @@ async def weekly_summary_job(bot):
     start_of_period = datetime.combine(week_start, time.min)
     end_of_period = datetime.combine(today, time.max)
 
+    user_payloads = []
     async with session_scope() as session:
         # Haftalik AI tahlili premium imkoniyat — barcha foydalanuvchi uchun
         # Gemini chaqirish keraksiz xarajat va job'ning cho'zilib ketishiga sabab.
@@ -88,41 +89,57 @@ async def weekly_summary_job(bot):
                 )
                 active_debts = (await session.execute(stmt_debts)).scalar() or 0
 
-                # 5. Generate weekly AI summary
-                summary_text = await GeminiService.generate_weekly_summary(
-                    user_name=user.name or "Foydalanuvchi",
-                    income=income,
-                    expenses=expenses,
-                    daily_limit=daily_limit,
-                    completed_tasks=completed_tasks,
-                    total_tasks=total_tasks,
-                    dream_progress=round(dream_progress, 1),
-                    dream_name=dream_name,
-                    dream_daily_target=dream_daily_target,
-                    active_debts=active_debts,
-                    week_start=week_start.strftime('%d.%m.%Y'),
-                    week_end=today.strftime('%d.%m.%Y')
-                )
-
-                # 6. Send to user with download buttons
-                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                report_kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📊 O'tgan oy hisoboti", callback_data="report_last_month")],
-                    [InlineKeyboardButton(text="📈 Bu oy (shu kungacha)", callback_data="report_this_month")]
-                ])
-
-                await bot.send_message(
-                    user.telegram_id,
-                    summary_text,
-                    parse_mode="Markdown",
-                    reply_markup=report_kb
-                )
-
+                user_payloads.append({
+                    "telegram_id": user.telegram_id,
+                    "user_name": user.name or "Foydalanuvchi",
+                    "income": income,
+                    "expenses": expenses,
+                    "daily_limit": daily_limit,
+                    "completed_tasks": completed_tasks,
+                    "total_tasks": total_tasks,
+                    "dream_progress": round(dream_progress, 1),
+                    "dream_name": dream_name,
+                    "dream_daily_target": dream_daily_target,
+                    "active_debts": active_debts,
+                })
             except Exception as e:
-                logging.error(f"Error sending weekly summary to {user.telegram_id}: {e}")
+                logging.error(f"Error gathering weekly summary data for user {user.telegram_id}: {e}")
 
-            # Telegram rate limit va Gemini kvotasini himoyalash
-            await asyncio.sleep(0.1)
+    # 5. DB sessiyasi yopildi! Endi Gemini AI tahlillarini xavfsiz bajaramiz (DB ulanishi band qilinmaydi)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    report_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 O'tgan oy hisoboti", callback_data="report_last_month")],
+        [InlineKeyboardButton(text="📈 Bu oy (shu kungacha)", callback_data="report_this_month")]
+    ])
+
+    for payload in user_payloads:
+        try:
+            summary_text = await GeminiService.generate_weekly_summary(
+                user_name=payload["user_name"],
+                income=payload["income"],
+                expenses=payload["expenses"],
+                daily_limit=payload["daily_limit"],
+                completed_tasks=payload["completed_tasks"],
+                total_tasks=payload["total_tasks"],
+                dream_progress=payload["dream_progress"],
+                dream_name=payload["dream_name"],
+                dream_daily_target=payload["dream_daily_target"],
+                active_debts=payload["active_debts"],
+                week_start=week_start.strftime('%d.%m.%Y'),
+                week_end=today.strftime('%d.%m.%Y')
+            )
+
+            await bot.send_message(
+                payload["telegram_id"],
+                summary_text,
+                parse_mode="Markdown",
+                reply_markup=report_kb
+            )
+        except Exception as e:
+            logging.error(f"Error sending weekly summary to {payload['telegram_id']}: {e}")
+
+        # Telegram rate limit va Gemini kvotasini himoyalash
+        await asyncio.sleep(0.1)
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters.callback_data import CallbackData
@@ -381,6 +398,7 @@ async def check_inactive_users_job(bot):
     two_days_ago = tashkent_now - timedelta(days=2)
     three_days_ago = tashkent_now - timedelta(days=3)
 
+    inactive_payloads = []
     async with session_scope() as session:
         # Select active users inactive between 2 and 3 days ago
         stmt = select(User).where(
@@ -412,29 +430,45 @@ async def check_inactive_users_job(bot):
                     dream_saved = dream.saved_amount or 0.0
                     dream_daily_target = dream.daily_limit_target or 0.0
 
-                user_name = user.name or "Do'stim"
-                user_lang = user.language or 'uz'
-                
-                reminder_text = await GeminiService.generate_inactivity_reminder(
-                    user_name=user_name,
-                    balance=user.balance or 0.0,
-                    daily_limit=user.daily_limit or 0.0,
-                    dream_name=dream_name,
-                    dream_total=dream_total,
-                    dream_saved=dream_saved,
-                    dream_daily_target=dream_daily_target,
-                    language=user_lang
-                )
-
-                await bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=reminder_text,
-                    parse_mode="Markdown"
-                )
-                logging.info(f"Sent inactivity reminder to user {user.telegram_id}")
-
+                inactive_payloads.append({
+                    "telegram_id": user.telegram_id,
+                    "user_name": user.name or "Do'stim",
+                    "user_lang": user.language or 'uz',
+                    "balance": user.balance or 0.0,
+                    "daily_limit": user.daily_limit or 0.0,
+                    "dream_name": dream_name,
+                    "dream_total": dream_total,
+                    "dream_saved": dream_saved,
+                    "dream_daily_target": dream_daily_target,
+                })
             except Exception as e:
-                logging.error(f"Error processing inactivity reminder for {user.telegram_id}: {e}")
+                logging.error(f"Error gathering inactive data for {user.telegram_id}: {e}")
+
+    # DB sessiyasi yopildi! Endi Gemini chaqiruvlari va xabarlarni xavfsiz bajaramiz
+    for payload in inactive_payloads:
+        try:
+            reminder_text = await GeminiService.generate_inactivity_reminder(
+                user_name=payload["user_name"],
+                balance=payload["balance"],
+                daily_limit=payload["daily_limit"],
+                dream_name=payload["dream_name"],
+                dream_total=payload["dream_total"],
+                dream_saved=payload["dream_saved"],
+                dream_daily_target=payload["dream_daily_target"],
+                language=payload["user_lang"]
+            )
+
+            await bot.send_message(
+                chat_id=payload["telegram_id"],
+                text=reminder_text,
+                parse_mode="Markdown"
+            )
+            logging.info(f"Sent inactivity reminder to user {payload['telegram_id']}")
+
+        except Exception as e:
+            logging.error(f"Error processing inactivity reminder for {payload['telegram_id']}: {e}")
+
+        await asyncio.sleep(0.1)
 
 async def salary_due_job(bot):
     """

@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from services.gemini_service import GeminiService, safe_generate_content
-from database.engine import get_session, session_scope
+from database.engine import session_scope
 from database.models import Transaction, User, Dream, Debt, Task
 from sqlalchemy import select, func, cast, Date
 from datetime import datetime, date, timedelta
@@ -391,26 +391,30 @@ async def handle_text_finance(message: types.Message, state: FSMContext):
                         all_ai_advice.append(ai_advice)
 
             elif action == "add_task":
-                # TODO(session): bu loop ichida mantiqni boshqaruvchi break bor (qator [412, 430]), shuning uchun session_scope'ga ko'chirilmadi.
-                async for session in get_session():
+                async with session_scope() as session:
                     result = await session.execute(select(User).where(User.telegram_id == user_id))
                     user = result.scalars().first()
-                    if user:
-                        is_premium_active = user.is_premium or (user.premium_until and user.premium_until > get_tashkent_time())
-                        if not is_premium_active:
-                            from utils.i18n import _
-                            lang = user.language if user else 'uz'
-                            all_ai_advice.append(_('premium_task_only', lang))
-                            needs_webapp_button = True
-                            break
+                    if not user:
+                        is_user_valid = False
+                        is_prem = False
+                        user_lang = 'uz'
+                    else:
+                        is_user_valid = True
+                        is_prem = user.is_premium or (user.premium_until and user.premium_until > get_tashkent_time())
+                        user_lang = user.language or 'uz'
 
+                if is_user_valid:
+                    if not is_prem:
+                        from utils.i18n import _
+                        all_ai_advice.append(_('premium_task_only', user_lang))
+                        needs_webapp_button = True
+                    else:
                         task_title = data.get("task", "Yangi vazifa")
                         try:
                             task_data = await ai_queue.process(message, GeminiService.analyze_task, task_title)
                             if task_data and task_data.get("title"):
                                 task_title = task_data.get("title")
                             task_description = task_data.get("description") if task_data else None
-                            # Use task_data's due_date if found, else fallback to the one extracted by first AI pass
                             due_date_str = (task_data.get("due_date") if task_data else None) or data.get("due_date")
                         except Exception:
                             due_date_str = data.get("due_date")
@@ -418,31 +422,31 @@ async def handle_text_finance(message: types.Message, state: FSMContext):
 
                         if due_date_str == "needs_clarification":
                             from utils.i18n import _
-                            lang = user.language if user else 'uz'
-                            all_ai_advice.append(_('task_time_clarify', lang))
-                            break
-
-                        due_date = parse_ai_due_date(due_date_str)
-                        new_task = Task(user_id=user.id, title=task_title, description=task_description, due_date=due_date, is_ai_generated=True, is_notified=False, is_completed=False, created_at=get_tashkent_time())
-                        session.add(new_task)
-                        await session.commit()
-                        
-                        if due_date:
-                            from utils.i18n import _
-                            lang = user.language if user else 'uz'
-                            all_ai_advice.append(_('task_time_accepted', lang, advice=ai_advice, time_str=due_date.strftime('%H:%M %d.%m.%Y')))
-                        elif due_date_str == "past_date":
-                            from utils.i18n import _
-                            lang = user.language if user else 'uz'
-                            all_ai_advice.append(_('task_past_time', lang))
-                            await state.set_state(FinanceState.waiting_for_task_time)
-                            await state.update_data(task_id=new_task.id)
+                            all_ai_advice.append(_('task_time_clarify', user_lang))
                         else:
-                            from utils.i18n import _
-                            lang = user.language if user else 'uz'
-                            all_ai_advice.append(_('task_saved_no_time', lang, advice=ai_advice))
-                            await state.set_state(FinanceState.waiting_for_task_time)
-                            await state.update_data(task_id=new_task.id)
+                            due_date = parse_ai_due_date(due_date_str)
+                            task_saved_id = None
+                            async with session_scope() as session:
+                                res_u = await session.execute(select(User).where(User.telegram_id == user_id))
+                                u_db = res_u.scalars().first()
+                                if u_db:
+                                    new_task = Task(user_id=u_db.id, title=task_title, description=task_description, due_date=due_date, is_ai_generated=True, is_notified=False, is_completed=False, created_at=get_tashkent_time())
+                                    session.add(new_task)
+                                    await session.commit()
+                                    task_saved_id = new_task.id
+
+                            if task_saved_id:
+                                from utils.i18n import _
+                                if due_date:
+                                    all_ai_advice.append(_('task_time_accepted', user_lang, advice=ai_advice, time_str=due_date.strftime('%H:%M %d.%m.%Y')))
+                                elif due_date_str == "past_date":
+                                    all_ai_advice.append(_('task_past_time', user_lang))
+                                    await state.set_state(FinanceState.waiting_for_task_time)
+                                    await state.update_data(task_id=task_saved_id)
+                                else:
+                                    all_ai_advice.append(_('task_saved_no_time', user_lang, advice=ai_advice))
+                                    await state.set_state(FinanceState.waiting_for_task_time)
+                                    await state.update_data(task_id=task_saved_id)
 
                     if tutorial_step == "tutorial_step_2":
                         async with session_scope() as session_t:
@@ -453,37 +457,32 @@ async def handle_text_finance(message: types.Message, state: FSMContext):
                                 from utils.i18n import _
                                 lang = u.language if u else 'uz'
                                 all_ai_advice.append(_('tutorial_step_3_prompt', lang))
-                    break
 
             elif action == "manage_debt":
-                # TODO(session): bu loop ichida mantiqni boshqaruvchi break bor (qator [473, 483]), shuning uchun session_scope'ga ko'chirilmadi.
-                async for session in get_session():
+                async with session_scope() as session:
                     result = await session.execute(select(User).where(User.telegram_id == user_id))
                     user = result.scalars().first()
                     if user:
                         if not is_premium_active(user):
                             ai_advice = "⚠️ **Qarzlar hisobi** bo'limi faqat Premium foydalanuvchilar uchun ochiq. /premium orqali obuna bo'ling."
-                            break
-                        
-                        count_stmt = select(func.count(Debt.id)).where(
-                            Debt.user_id == user.id,
-                            func.extract('month', Debt.created_at) == now_tz.month,
-                            func.extract('year', Debt.created_at) == now_tz.year
-                        )
-                        month_count = (await session.execute(count_stmt)).scalar() or 0
-                        if month_count >= 5:
-                            ai_advice = "⚠️ Premium obunachilar uchun oylik qarz yozish limiti (5 ta) tugadi."
-                            break
-
-                        person = data.get("person", "Noma'lum shaxs")
-                        amount = safe_parse_amount(data.get("amount", 0))
-                        d_type = data.get("type", "loaned")
-                        due_date_str = data.get("due_date")
-                        due_date = parse_ai_due_date(due_date_str)
-                        new_debt = Debt(user_id=user.id, person=person, amount=amount, type=d_type, due_date=due_date)
-                        session.add(new_debt)
-                        await session.commit()
-                    break
+                        else:
+                            count_stmt = select(func.count(Debt.id)).where(
+                                Debt.user_id == user.id,
+                                func.extract('month', Debt.created_at) == now_tz.month,
+                                func.extract('year', Debt.created_at) == now_tz.year
+                            )
+                            month_count = (await session.execute(count_stmt)).scalar() or 0
+                            if month_count >= 5:
+                                ai_advice = "⚠️ Premium obunachilar uchun oylik qarz yozish limiti (5 ta) tugadi."
+                            else:
+                                person = data.get("person", "Noma'lum shaxs")
+                                amount = safe_parse_amount(data.get("amount", 0))
+                                d_type = data.get("type", "loaned")
+                                due_date_str = data.get("due_date")
+                                due_date = parse_ai_due_date(due_date_str)
+                                new_debt = Debt(user_id=user.id, person=person, amount=amount, type=d_type, due_date=due_date)
+                                session.add(new_debt)
+                                await session.commit()
                 if ai_advice:
                     all_ai_advice.append(ai_advice)
 
@@ -623,18 +622,15 @@ async def handle_voice_finance(message: types.Message, bot: Bot, state: FSMConte
                 if isinstance(data, list):
                     data = data[0] if data else {}
                 title = data.get("task", "Rejangiz") if data else "Rejangiz"
-                # TODO(session): bu loop ichida mantiqni boshqaruvchi break bor (qator [641]), shuning uchun session_scope'ga ko'chirilmadi.
-                async for session in get_session():
+                lang = 'uz'
+                async with session_scope() as session:
                     u = (await session.execute(select(User).where(User.telegram_id == user_id))).scalars().first()
                     if u:
                         u.user_state = "testing_done"
+                        lang = u.language or 'uz'
                         await session.commit()
-                    break
-                    from utils.i18n import _
-                    lang = u.language if u else 'uz'
-                    await message.reply(_('tutorial_plan_success_privacy', lang, title=title))
                 from utils.i18n import _
-                lang = u.language if 'u' in locals() and u else 'uz'
+                await message.reply(_('tutorial_plan_success_privacy', lang, title=title))
                 policy_text = _('privacy_policy_text', lang)
                 markup = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text=_('privacy_policy_accept', lang), callback_data="accept_privacy_policy")]
@@ -741,92 +737,85 @@ async def handle_voice_finance(message: types.Message, bot: Bot, state: FSMConte
                             all_ai_advice.append(ai_advice)
 
                 elif action == "add_task":
-                    # TODO(session): bu loop ichida mantiqni boshqaruvchi break bor (qator [776]), shuning uchun session_scope'ga ko'chirilmadi.
-                    async for session in get_session():
+                    async with session_scope() as session:
                         result = await session.execute(select(User).where(User.telegram_id == user_id))
                         user = result.scalars().first()
-                        if user:
-                            task_title = data.get("task", "Yangi vazifa")
-                            try:
-                                # Not perfect because text_from_voice isn't here, fallback to task_title
-                                task_data = await ai_queue.process(message, GeminiService.analyze_task, task_title)
-                                if task_data and task_data.get("title"):
-                                    task_title = task_data.get("title")
-                                task_description = task_data.get("description") if task_data else None
-                                # Use task_data's due_date if found, else fallback to the one extracted by audio AI
-                                due_date_str = (task_data.get("due_date") if task_data else None) or data.get("due_date")
-                            except Exception:
-                                due_date_str = data.get("due_date")
-                                task_description = None
-                                
-                            if due_date_str == "needs_clarification":
-                                from utils.i18n import _
-                                lang = user.language if user else 'uz'
-                                all_ai_advice.append(_('task_time_clarify', lang))
-                                break
+                        user_lang = (user.language or 'uz') if user else 'uz'
 
-                            due_date = parse_ai_due_date(due_date_str)
-                            new_task = Task(user_id=user.id, title=task_title, description=task_description, due_date=due_date, is_ai_generated=True, is_notified=False, is_completed=False, created_at=get_tashkent_time())
-                            session.add(new_task)
-                            await session.commit()
-                            
+                    task_title = data.get("task", "Yangi vazifa")
+                    try:
+                        task_data = await ai_queue.process(message, GeminiService.analyze_task, task_title)
+                        if task_data and task_data.get("title"):
+                            task_title = task_data.get("title")
+                        task_description = task_data.get("description") if task_data else None
+                        due_date_str = (task_data.get("due_date") if task_data else None) or data.get("due_date")
+                    except Exception:
+                        due_date_str = data.get("due_date")
+                        task_description = None
+
+                    if due_date_str == "needs_clarification":
+                        from utils.i18n import _
+                        all_ai_advice.append(_('task_time_clarify', user_lang))
+                    else:
+                        due_date = parse_ai_due_date(due_date_str)
+                        task_saved_id = None
+                        async with session_scope() as session:
+                            res_u = await session.execute(select(User).where(User.telegram_id == user_id))
+                            u_db = res_u.scalars().first()
+                            if u_db:
+                                new_task = Task(user_id=u_db.id, title=task_title, description=task_description, due_date=due_date, is_ai_generated=True, is_notified=False, is_completed=False, created_at=get_tashkent_time())
+                                session.add(new_task)
+                                await session.commit()
+                                task_saved_id = new_task.id
+
+                        if task_saved_id:
+                            from utils.i18n import _
                             if due_date:
-                                from utils.i18n import _
-                                lang = user.language if user else 'uz'
-                                all_ai_advice.append(_('task_time_accepted', lang, advice=ai_advice, time_str=due_date.strftime('%H:%M %d.%m.%Y')))
+                                all_ai_advice.append(_('task_time_accepted', user_lang, advice=ai_advice, time_str=due_date.strftime('%H:%M %d.%m.%Y')))
                             elif due_date_str == "past_date":
-                                from utils.i18n import _
-                                lang = user.language if user else 'uz'
-                                all_ai_advice.append(_('task_past_time', lang))
+                                all_ai_advice.append(_('task_past_time', user_lang))
                                 await state.set_state(FinanceState.waiting_for_task_time)
-                                await state.update_data(task_id=new_task.id)
+                                await state.update_data(task_id=task_saved_id)
                             else:
-                                from utils.i18n import _
-                                lang = user.language if user else 'uz'
-                                all_ai_advice.append(_('task_saved_no_time', lang, advice=ai_advice))
+                                all_ai_advice.append(_('task_saved_no_time', user_lang, advice=ai_advice))
                                 await state.set_state(FinanceState.waiting_for_task_time)
-                                await state.update_data(task_id=new_task.id)
+                                await state.update_data(task_id=task_saved_id)
 
-                        if tutorial_step == "tutorial_step_2":
-                            async with session_scope() as session_t:
-                                u = (await session_t.execute(select(User).where(User.telegram_id == user_id))).scalars().first()
-                                if u:
-                                    u.user_state = "tutorial_step_3"
-                                    await session_t.commit()
-                                    from utils.i18n import _
-                                    lang = u.language if u else 'uz'
-                                    all_ai_advice.append(_('tutorial_step_3_prompt', lang))
-                        break
+                    if tutorial_step == "tutorial_step_2":
+                        async with session_scope() as session_t:
+                            u = (await session_t.execute(select(User).where(User.telegram_id == user_id))).scalars().first()
+                            if u:
+                                u.user_state = "tutorial_step_3"
+                                await session_t.commit()
+                                from utils.i18n import _
+                                lang = u.language if u else 'uz'
+                                all_ai_advice.append(_('tutorial_step_3_prompt', lang))
 
                 elif action == "manage_debt":
-                    # TODO(session): bu loop ichida mantiqni boshqaruvchi break bor (qator [819, 829]), shuning uchun session_scope'ga ko'chirilmadi.
-                    async for session in get_session():
+                    async with session_scope() as session:
                         result = await session.execute(select(User).where(User.telegram_id == user_id))
                         user = result.scalars().first()
                         if user:
                             if not is_premium_active(user):
                                 ai_advice = "⚠️ **Qarzlar hisobi** bo'limi faqat Premium foydalanuvchilar uchun ochiq. /premium orqali obuna bo'ling."
-                                break
-                            
-                            count_stmt = select(func.count(Debt.id)).where(
-                                Debt.user_id == user.id,
-                                func.extract('month', Debt.created_at) == now_tz.month,
-                                func.extract('year', Debt.created_at) == now_tz.year
-                            )
-                            month_count = (await session.execute(count_stmt)).scalar() or 0
-                            if month_count >= 5:
-                                ai_advice = "⚠️ Premium obunachilar uchun oylik qarz yozish limiti (5 ta) tugadi."
-                                break
-
-                            person = data.get("person", "Noma'lum shaxs")
-                            amount = safe_parse_amount(data.get("amount", 0))
-                            d_type = data.get("type", "loaned")
-                            due_date_str = data.get("due_date")
-                            due_date = parse_ai_due_date(due_date_str)
-                            new_debt = Debt(user_id=user.id, person=person, amount=amount, type=d_type, due_date=due_date)
-                            session.add(new_debt)
-                            await session.commit()
-                        break
+                            else:
+                                count_stmt = select(func.count(Debt.id)).where(
+                                    Debt.user_id == user.id,
+                                    func.extract('month', Debt.created_at) == now_tz.month,
+                                    func.extract('year', Debt.created_at) == now_tz.year
+                                )
+                                month_count = (await session.execute(count_stmt)).scalar() or 0
+                                if month_count >= 5:
+                                    ai_advice = "⚠️ Premium obunachilar uchun oylik qarz yozish limiti (5 ta) tugadi."
+                                else:
+                                    person = data.get("person", "Noma'lum shaxs")
+                                    amount = safe_parse_amount(data.get("amount", 0))
+                                    d_type = data.get("type", "loaned")
+                                    due_date_str = data.get("due_date")
+                                    due_date = parse_ai_due_date(due_date_str)
+                                    new_debt = Debt(user_id=user.id, person=person, amount=amount, type=d_type, due_date=due_date)
+                                    session.add(new_debt)
+                                    await session.commit()
                     if ai_advice:
                         all_ai_advice.append(ai_advice)
 
@@ -1058,9 +1047,7 @@ async def process_finance_record(message: types.Message, data: dict, state: FSMC
 
 async def finalize_finance_record(message: types.Message, data: dict, user_id: int = None):
     user_id = user_id or message.from_user.id
-    # get_session() generatoridan sessiyani olish
-    # TODO(session): bu loop ichida mantiqni boshqaruvchi break bor (qator [1138, 1145]), shuning uchun session_scope'ga ko'chirilmadi.
-    async for session in get_session():
+    async with session_scope() as session:
         try:
             # 1. Foydalanuvchini topish
             result = await session.execute(select(User).where(User.telegram_id == user_id))
@@ -1089,8 +1076,6 @@ async def finalize_finance_record(message: types.Message, data: dict, user_id: i
                 item_type = raw_type
 
             ai_advice = data.get("ai_advice")
-            entry_time = get_tashkent_time()
-
             currency = data.get("currency", "UZS")
             due_date = parse_ai_due_date(data.get("due_date"))
 
@@ -1120,16 +1105,12 @@ async def finalize_finance_record(message: types.Message, data: dict, user_id: i
 
             import logging
             logging.info(f"Yangi xarajat bazaga yozildi: {amount} {currency} ({category}) - ID: {new_trans.id}")
-            
-            # Sessiyadan chiqish (muhim!)
-            break 
 
         except Exception as e:
             await session.rollback()
             # SECURITY FIX: log full error internally, never expose DB details to user
             logging.exception(f"DATABASE ERROR IN FINANCE for user {user_id}:")
             await message.answer("⚠️ Ma'lumotni saqlashda xatolik yuz berdi. Iltimos keyinroq qayta urinib ko'ring.")
-            break
 
 
 # Callback Data Structure

@@ -36,6 +36,7 @@ async def delete_user_data(telegram_id: int) -> bool:
         user_id = user.id
         await session.execute(update(User).where(User.referred_by_id == user_id).values(referred_by_id=None))
         await session.execute(text("DELETE FROM finances WHERE user_id = :uid").bindparams(uid=user_id))
+        await session.execute(text("DELETE FROM currency_conversion_log WHERE user_id = :uid").bindparams(uid=user_id))
         await session.execute(text("DELETE FROM tasks WHERE user_id = :uid").bindparams(uid=user_id))
         await session.execute(text("DELETE FROM dream_progress WHERE user_id = :uid").bindparams(uid=user_id))
         await session.execute(text("DELETE FROM dreams WHERE user_id = :uid").bindparams(uid=user_id))

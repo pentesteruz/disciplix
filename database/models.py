@@ -64,6 +64,7 @@ class User(Base):
     dream_progress = relationship("DreamProgress", back_populates="user", cascade="all, delete-orphan")
     debts = relationship("Debt", back_populates="user", cascade="all, delete-orphan")
     premium_requests = relationship("PremiumRequest", back_populates="user", cascade="all, delete-orphan")
+    currency_conversion_logs = relationship("CurrencyConversionLog", cascade="all, delete-orphan", foreign_keys="[CurrencyConversionLog.user_id]")
 
     # finances relationship added dynamically below if needed or just replace usage
 
