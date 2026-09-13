@@ -53,6 +53,95 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 async def init_db():
+    # PostgreSQL muhitida mavjud jadvallarni tekshirish va avtomatik tuzatish:
+    # Agar 'users' yoki 'dreams' jadvallari allaqachon mavjud bo'lsa, ammo ularda 'id' ustuni
+    # bo'lmasa, Base.metadata.create_all xatolik (foreign key constraint does not exist) beradi.
+    if not DB_NAME.startswith("sqlite"):
+        try:
+            for table_name in ["users", "dreams"]:
+                async with engine.begin() as conn:
+                    # Jadval mavjudligini va ustunlarini tekshirish
+                    res = await conn.execute(text(
+                        "SELECT column_name, data_type FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = :tbl;"
+                    ), {"tbl": table_name})
+                    cols = {r[0].lower(): r[1] for r in res.fetchall()}
+                    
+                    if cols and "id" not in cols:
+                        cnt_res = await conn.execute(text(f"SELECT COUNT(*) FROM {table_name};"))
+                        cnt = cnt_res.scalar() or 0
+                        logging.warning(
+                            f"DIAGNOSTIC: '{table_name}' jadvali mavjud ({cnt} qator), "
+                            f"ammo 'id' ustuni yo'q! Ustunlar: {list(cols.keys())}"
+                        )
+                        
+                        if cnt == 0:
+                            # Agar jadval bo'sh bo'lsa, uni xavfsiz o'chirib tashlaymiz,
+                            # shunda create_all to'liq to'g'ri model bo'yicha qayta yaratadi.
+                            logging.info(f"Bo'sh va mos kelmaydigan '{table_name}' jadvali o'chirib tashlanmoqda (CASCADE)...")
+                            await conn.execute(text(f"DROP TABLE {table_name} CASCADE;"))
+                        else:
+                            # Agar ma'lumot bo'lsa, uni saqlab qolgan holda PK/id qo'shamiz
+                            if table_name == "users":
+                                if "user_id" in cols:
+                                    if "telegram_id" in cols:
+                                        await conn.execute(text("ALTER TABLE users RENAME COLUMN user_id TO id;"))
+                                        logging.info("users.user_id ustuni users.id ga o'zgartirildi.")
+                                    else:
+                                        await conn.execute(text("ALTER TABLE users RENAME COLUMN user_id TO telegram_id;"))
+                                        await conn.execute(text("""
+                                            DO $$
+                                            DECLARE r RECORD;
+                                            BEGIN
+                                                FOR r IN (
+                                                    SELECT constraint_name 
+                                                    FROM information_schema.table_constraints 
+                                                    WHERE table_schema = 'public' AND table_name = 'users' AND constraint_type = 'PRIMARY KEY'
+                                                ) LOOP
+                                                    EXECUTE 'ALTER TABLE users DROP CONSTRAINT ' || quote_ident(r.constraint_name) || ' CASCADE;';
+                                                END LOOP;
+                                            END $$;
+                                        """))
+                                        await conn.execute(text("ALTER TABLE users ADD COLUMN id SERIAL PRIMARY KEY;"))
+                                        logging.info("users.user_id -> telegram_id qilindi va yangi id SERIAL PRIMARY KEY qo'shildi.")
+                                elif "telegram_id" in cols:
+                                    await conn.execute(text("""
+                                        DO $$
+                                        DECLARE r RECORD;
+                                        BEGIN
+                                            FOR r IN (
+                                                SELECT constraint_name 
+                                                FROM information_schema.table_constraints 
+                                                WHERE table_schema = 'public' AND table_name = 'users' AND constraint_type = 'PRIMARY KEY'
+                                            ) LOOP
+                                                EXECUTE 'ALTER TABLE users DROP CONSTRAINT ' || quote_ident(r.constraint_name) || ' CASCADE;';
+                                            END LOOP;
+                                        END $$;
+                                    """))
+                                    await conn.execute(text("ALTER TABLE users ADD COLUMN id SERIAL PRIMARY KEY;"))
+                                    logging.info("users jadvaliga id SERIAL PRIMARY KEY qo'shildi.")
+                                else:
+                                    await conn.execute(text("ALTER TABLE users ADD COLUMN id SERIAL PRIMARY KEY;"))
+                                    logging.info("users jadvaliga id SERIAL PRIMARY KEY qo'shildi.")
+                            elif table_name == "dreams":
+                                await conn.execute(text("""
+                                    DO $$
+                                    DECLARE r RECORD;
+                                    BEGIN
+                                        FOR r IN (
+                                            SELECT constraint_name 
+                                            FROM information_schema.table_constraints 
+                                            WHERE table_schema = 'public' AND table_name = 'dreams' AND constraint_type = 'PRIMARY KEY'
+                                        ) LOOP
+                                            EXECUTE 'ALTER TABLE dreams DROP CONSTRAINT ' || quote_ident(r.constraint_name) || ' CASCADE;';
+                                        END LOOP;
+                                    END $$;
+                                """))
+                                await conn.execute(text("ALTER TABLE dreams ADD COLUMN id SERIAL PRIMARY KEY;"))
+                                logging.info("dreams jadvaliga id SERIAL PRIMARY KEY qo'shildi.")
+        except Exception as e:
+            logging.error(f"PostgreSQL oldindan tekshirishda xatolik yuz berdi: {e}", exc_info=True)
+
     async with engine.begin() as conn:
         # Create all tables defined in models
         await conn.run_sync(Base.metadata.create_all)
